@@ -12,13 +12,12 @@
 #define LCD_DATA_R          PORTB
 #define LCD_DATA_W          LATB
 #define LCD_DATA_DIR        TRISB
-#define LCD_RS              LATCbits.LATC2
-#define LCD_RS_DIR          TRISCbits.TRISC2
-#define LCD_RW              LATCbits.LATC1
-#define LCD_RW_DIR          TRISCbits.TRISC1
-#define LCD_E               LATCbits.LATC0
-#define LCD_E_DIR           TRISCbits.TRISC0
-#define VAR_SIGNAL          PORTAbits.RA4
+#define LCD_RS              LATDbits.LATD2
+#define LCD_RS_DIR          TRISDbits.TRISD2
+#define LCD_RW              LATDbits.LATD1
+#define LCD_RW_DIR          TRISDbits.TRISD1
+#define LCD_E               LATDbits.LATD0
+#define LCD_E_DIR           TRISDbits.TRISD0
 
 //+++++++++++++++++++++++++++++++++++++| DATA TYPES |+++++++++++++++++++++++++++++++++++++
 enum por_dir{ output, input };              // output = 0, input = 1
@@ -39,24 +38,56 @@ void LCD_init(void);
 void LCD_cmd(char);
 void send2LCD(char);
 void portsInit(void);
-int signaltime(void);
-unsigned long t0 = 0;
-unsigned unsigned long t1 = 0;
-unsigned long deltaT = 0;
-double frecuencia = 0;
+char int_to_char_d1(int);
+char int_to_char_d2(int);
+char int_to_char_d3(int);
+void delay_1s(void);		//Funcion de retardo 1s
+unsigned int periodo1 = 0;		//Guarda primera captura
+unsigned int periodo2 = 0;
+unsigned int periodo_total = 0;
+int resultado = 0;
 
 //+++++++++++++++++++++++++++++++++++++| MAIN |+++++++++++++++++++++++++++++++++++++
 void main( void ){
     LCD_init();
-    OSCCON = 0b01110110;// Set the internal oscillator to 8MHz and stable
     LCD_DATA_DIR = 0x00;
     LCD_RS = 0;
     LCD_RW = 0;
     LCD_E  = 0;
+    
+    periodo1 = 0;		//Guarda primera captura
+    periodo2 = 0;
+    periodo_total = 0;
+    resultado = 0;            //Para un despligue en watch
     portsInit();
+
     while(1){
-        signaltime();
-        frecuencia = 1000/deltaT;
+        CCP1CON = 0X05;
+        CCPTMRS = 0x00;
+        //Configuramos el Timer 1 (T1CON), 16 bits
+        T1CONbits.TMR1CS = 0b00;        //Fuente de reloj FOSC/4
+        T1CONbits.T1CKPS = 0b11;        //Prescalador 1:8
+        T1CONbits.T1SOSCEN = 0b0;       //Oscilador secundario deshabilitado
+        T1CONbits.T1SYNC = 0b1;         //No sincronizar con reloj externo
+        //Configuramos registro del Gate
+        T1GCONbits.TMR1GE = 0;          //No requerimos control del gate
+
+        //Arrancar el timer 1
+        T1CONbits.TMR1ON = 1;
+
+        while(PIR1bits.CCP1IF == 0);		//Esperamos evento de transicion
+        periodo1 = CCPR1;                      //Leer valor capturado
+        PIR1bits.CCP1IF = 0;			//Borramos bandera de evento
+
+        while(PIR1bits.CCP1IF == 0);	       //Esperamos evento de transicion
+        periodo2 = CCPR1;                      //Leer valor capturado
+        PIR1bits.CCP1IF = 0;			//Borramos bandera de evento
+        T1CONbits.TMR1ON = 0;		       //Apagamos el timer 1
+
+        periodo_total = periodo2 - periodo1;   //Diferencia me da el total.
+
+        //Para despliegue en un watch de var.
+        resultado = 31250/periodo_total;
         LCD_E = 1;
         __delay_ms(25);
         send2LCD('F');
@@ -81,17 +112,22 @@ void main( void ){
         __delay_ms(25);
         send2LCD(':');
         __delay_ms(25);
-        char disp1 = int_to_char_d3(frecuencia);
+        LCD_cmd(0xC0);          // Set cursor to 2 line 
+        char disp1 = int_to_char_d3(resultado);
         __delay_ms(25);
         send2LCD(disp1);
-        char disp2 = int_to_char_d1(frecuencia);
+        char disp2 = int_to_char_d1(resultado);
         __delay_ms(25);
         send2LCD(disp2);
-        char disp3 = int_to_char_d2(frecuencia);
-        __delay_ms(25);
+        char disp3 = int_to_char_d2(resultado);
         send2LCD(disp3);
+        __delay_ms(25);
+        send2LCD('H');
+        __delay_ms(25);
+        send2LCD('z');
+        __delay_ms(25);
         LCD_E = 0;
-        __delay_ms(3000);
+        delay_1s();
         LCD_cmd(0x01);           // Clear display and move cursor home
     }
 }
@@ -153,43 +189,10 @@ void send2LCD(char xy){
 
 // Ports initialization function
 void portsInit(void){
-    ANSELA = digital;   // Set port A as Digital for keypad driving
-    TRISA = 0b00010000;       // For Port A, set pin 1 as an input
-    
+    TRISCbits.TRISC2 = 1;     // Input
+    ANSELCbits.ANSC2 = 0;     // Digital
 }
 
-// Function that inits Timer
-void init_timer2(void){
-    RCONbits.IPEN = 1;              // Enable priority in interruption
-    INTCON2bits.INTEDG0 = 1;        // Int0 (RB0)) interrupts on positive transit
-    INTCONbits.INT0IF = 0;          // Clear flag INT0
-    INTCONbits.INT0IE = 1;          // Enable individual interrupt for INT0
-    INTCONbits.GIEH = 1;            // Global enable for High priority interruptd
-    INTCONbits.GIEL = 1;            // Global enable for Low Priority interrupt
-    /*PIE1bits.TMR2IE = 1;          // Enable interrupt on match for timer2
-    IPR1bits.TMR2IP = 1;            // Interrupt is high priority
-    PIR1bits.TMR2IF = 0;            // Clear the interrupt flag
-    INTCONbits.GIEH = 1;            // Habilitacion global de las de prioridad alta
-    INTCONbits.GIEL = 0;            // No hay ninguna asignada por el momento
-    PR2 = 124;                      // 125 * 8 * 4 * (4 * 6.25 e -8) = 1e-3
-    T2CON = 0b00111101;             // Post scale 8, Timer On y Prescale = 4*/
-}
-
-// ISR for Timer2
-void __interrupt (high_priority) high_priority_ISR(void){
-    //VAR_SIGNAL = LED_D2 ^ 0x01;
-    PIR1bits.TMR2IF = 0;            // Apagar bandera
-}
-
-
-int signaltime(void){
-  time_t rawtime;
-  struct tm * timeinfo;
-  time ( &rawtime );
-  t1 = localtime ( &rawtime );
-  deltaT = t1 - t0;
-  t0 = t1;
-}
 
 // Funcion que convierte el primer digito del resultado de un entero a un caracter
 char int_to_char_d3(int N){
@@ -201,39 +204,39 @@ char int_to_char_d3(int N){
         break;
         case 1:
             p3 = '1';
-            frecuencia = frecuencia - 100;
+            resultado = resultado - 100;
         break;
         case 2:
             p3 = '2';
-            frecuencia = frecuencia - 200;
+            resultado = resultado - 200;
         break;
         case 3:
             p3 = '3';
-            frecuencia = frecuencia - 300;
+            resultado = resultado - 300;
         break;
         case 4:
             p3 = '4';
-            frecuencia = frecuencia - 400;
+            resultado = resultado - 400;
         break;
         case 5:
             p3 = '5';
-            frecuencia = frecuencia - 500;
+            resultado = resultado - 500;
         break;
         case 6:
             p3 = '6';
-            frecuencia = frecuencia - 600;
+            resultado = resultado - 600;
         break;
         case 7:
             p3 = '7';
-            frecuencia = frecuencia - 700;
+            resultado = resultado - 700;
         break;
         case 8:
             p3 = '8';
-            frecuencia = frecuencia - 800;
+            resultado = resultado - 800;
         break;
         case 9:
             p3 = '9';
-            frecuencia = frecuencia - 900;
+            resultado = resultado - 900;
         break;
         default:
         break;
@@ -320,4 +323,17 @@ char int_to_char_d2(int N){
         default:
         break;
     }
+}
+
+void delay_1s(void){
+        //Count 40536 or 0x9E58 ticks
+	TMR0H = 0x0B;			//High byte 0x0BDC
+	TMR0L = 0xDC;			//Low bte de 0x0BDC
+	INTCONbits.TMR0IF = 0; 	//Clear the timer overflow flag
+	//Configure the timer
+	//16 bits
+	//Set a 16 pre-scaler
+	T0CON = 0b10000011;
+	while(INTCONbits.TMR0IF == 0); //Wait for overflow
+	T0CON = 0X00;		           //Stop the timer
 }
